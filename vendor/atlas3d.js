@@ -54,6 +54,10 @@ function geometryFor(ds, i){
   var ex=b[3]-b[0], ey=b[4]-b[1], ez=b[5]-b[2];
   for(var k=0;k<p.v;k++){ pos[k*3]=b[0]+q[k*3]/65535*ex; pos[k*3+1]=b[1]+q[k*3+1]/65535*ey; pos[k*3+2]=b[2]+q[k*3+2]/65535*ez; }
   var idx = new Uint16Array(buf, p.x, p.i);
+  /* make every closed surface wind outward (signed volume > 0) so back faces mean "inside" */
+  var vol=0; for(var t=0;t<idx.length;t+=3){ var a=idx[t]*3,b2=idx[t+1]*3,c=idx[t+2]*3;
+    vol+= pos[a]*(pos[b2+1]*pos[c+2]-pos[b2+2]*pos[c+1]) - pos[a+1]*(pos[b2]*pos[c+2]-pos[b2+2]*pos[c]) + pos[a+2]*(pos[b2]*pos[c+1]-pos[b2+1]*pos[c]); }
+  if(vol<0){ var flipped=new Uint16Array(idx); for(var t2=0;t2<flipped.length;t2+=3){ var tmp=flipped[t2+1]; flipped[t2+1]=flipped[t2+2]; flipped[t2+2]=tmp; } idx=flipped; }
   var g = new T.BufferGeometry();
   g.setAttribute("position", new T.BufferAttribute(pos,3));
   g.setIndex(new T.BufferAttribute(new Uint16Array(idx),1));
@@ -98,14 +102,26 @@ function Viewer(host, opts){
         '<button class="a3d-btn" data-act="left" title="Left side">Left</button>'+
         '<button class="a3d-btn" data-act="back" title="Back">Back</button>'+
         '<button class="a3d-btn a3d-iso" data-act="iso" title="Show only the selected structure">Isolate</button>'+
+        '<button class="a3d-btn a3d-slicebtn" data-act="slice" title="Cut the body on a plane and see the cross-section">Slice</button>'+
+      '</div>'+
+      '<div class="a3d-slicebar" hidden>'+
+        '<div class="a3d-seg"><button data-ax="axial" class="on">Axial</button><button data-ax="coronal">Coronal</button><button data-ax="sagittal">Sagittal</button></div>'+
+        '<input type="range" class="a3d-slicepos" min="0" max="1000" value="500" title="Move the plane">'+
+        '<span class="a3d-sliceread"></span>'+
+        '<button class="a3d-btn" data-sa="flip" title="Keep the other half">Flip</button>'+
+        '<button class="a3d-btn" data-sa="look" title="Turn the 3D view to face the cut">Face the cut</button>'+
+        '<div class="a3d-seg"><button data-mode="color" class="on">Colour</button><button data-mode="ct">CT</button></div>'+
+        '<div class="a3d-slicepre">'+SLICE_PRESETS.map(function(p){ return '<button data-sp="'+p.id+'">'+p.label+'</button>'; }).join("")+'</div>'+
       '</div>'+
     '</div>'+
-    '<div class="a3d-body"><div class="a3d-stage"><div class="a3d-loading"><div class="a3d-spin"></div><div>Loading 3D anatomy…</div></div><div class="a3d-hover" hidden></div></div>'+
+    '<div class="a3d-body"><div class="a3d-stage"><div class="a3d-loading"><div class="a3d-spin"></div><div>Loading 3D anatomy…</div></div><div class="a3d-hover" hidden></div>'+
+      '<div class="a3d-cut" hidden><span class="a3d-cutlab t"></span><span class="a3d-cutlab b"></span><span class="a3d-cutlab l"></span><span class="a3d-cutlab r"></span><div class="a3d-cuttitle"></div><div class="a3d-cutzoom"><button data-z="+" title="Zoom in">+</button><button data-z="-" title="Zoom out">−</button></div><div class="a3d-cuthint">scroll: move the plane · drag: pan · click: identify</div></div></div>'+
     '<aside class="a3d-info"><div class="a3d-tour" hidden></div><div class="a3d-detail"><div class="a3d-empty">Click any structure to identify it. Drag to rotate, scroll to zoom, right-drag to pan.</div></div></aside></div>';
   this.el = {
     stage: host.querySelector(".a3d-stage"), info: host.querySelector(".a3d-detail"), tour: host.querySelector(".a3d-tour"),
     chips: host.querySelector(".a3d-chips"), search: host.querySelector(".a3d-search input"), results: host.querySelector(".a3d-results"),
-    explode: host.querySelector(".a3d-explode input"), hover: host.querySelector(".a3d-hover"), loading: host.querySelector(".a3d-loading"), iso: host.querySelector(".a3d-iso")
+    explode: host.querySelector(".a3d-explode input"), hover: host.querySelector(".a3d-hover"), loading: host.querySelector(".a3d-loading"), iso: host.querySelector(".a3d-iso"),
+    sliceBtn: host.querySelector(".a3d-slicebtn"), slicebar: host.querySelector(".a3d-slicebar"), slicepos: host.querySelector(".a3d-slicepos"), sliceread: host.querySelector(".a3d-sliceread"), cut: host.querySelector(".a3d-cut")
   };
   this.meshes=[]; this.byName={}; this.visibleSys={}; this.only=null; this.selected=null; this.hovered=null; this.explodeK=0; this.isolate=false;
   this.tour=null; this.dirty=true; this.disposed=false; this.dimOthers=true;
@@ -115,6 +131,7 @@ function Viewer(host, opts){
   this.el.search.addEventListener("input", function(){ self.search(this.value); });
   this.el.search.addEventListener("keydown", function(e){ if(e.key==="Enter"){ var f=self.el.results.querySelector("button"); if(f) f.click(); } if(e.key==="Escape"){ self.el.results.hidden=true; } });
   this.ds = opts.dataset==="cell" ? "cell" : "body";
+  if(this.ds!=="body") this.el.sliceBtn.hidden=true;
   loadData(this.ds).then(function(d){ if(self.disposed) return; self.build(); }, function(err){ self.el.loading.innerHTML='<div style="max-width:32ch;text-align:center;color:var(--muted)">'+esc(err.message||err)+'</div>'; });
 }
 Viewer.prototype.build = function(){
@@ -145,6 +162,11 @@ Viewer.prototype.build = function(){
     var base = p.c ? new T.Color(p.c).convertSRGBToLinear().getHex() : tint(sys.color, i, p.s);
     var ghost = !!(GHOST[p.s] || (p.tr && p.tr<0.6));
     var mat = new T.MeshStandardMaterial({color:base, roughness:0.55, metalness:0.0, envMapIntensity:0.55, flatShading:false});
+    if(ds==="body"){ mat.onBeforeCompile=function(sh){ sh.uniforms.uCap=self.capU;
+        sh.fragmentShader=sh.fragmentShader.replace("uniform vec3 diffuse;","uniform vec3 diffuse; uniform vec4 uCap;")
+          .replace("#include <normal_fragment_maps>","#include <normal_fragment_maps>\n if(uCap.w>0.5 && !gl_FrontFacing){ normal=normalize(uCap.xyz); geometryNormal=normal; }")
+          .replace("#include <color_fragment>","#include <color_fragment>\n if(uCap.w>0.5 && !gl_FrontFacing){ diffuseColor.rgb*=0.9; }"); };
+      mat.customProgramCacheKey=function(){ return "cap"; }; }
     if(ghost){ mat.transparent=true; mat.opacity=p.tr||0.22; mat.depthWrite=false; mat.side=T.DoubleSide; }
     else if(p.tr){ mat.transparent=true; mat.opacity=p.tr; mat.side=T.DoubleSide; }
     if(p.ds){ mat.side=T.DoubleSide; }
@@ -154,11 +176,12 @@ Viewer.prototype.build = function(){
     m.renderOrder = ghost ? 10 : (p.tr ? 5 : 0);
     m.frustumCulled = true;
     var id=i+1; var pm = new T.MeshBasicMaterial({color:new T.Color(((id>>16)&255)/255, ((id>>8)&255)/255, (id&255)/255), toneMapped:false, fog:false});
-    if(ghost||p.ds||p.tr) pm.side=T.DoubleSide;
+    pm.side=T.DoubleSide;
     self.pickMats.push(pm);
     scene.add(m); self.meshes.push(m); self.byName[p.n]=m;
   });
   this.el.loading.remove();
+  this.initSlice();
   this.buildChips();
   this.bindControls();
   this.resizeObs = new ResizeObserver(function(){ self.resize(); }); this.resizeObs.observe(stage);
@@ -170,7 +193,8 @@ Viewer.prototype.build = function(){
 };
 Viewer.prototype.resize = function(){
   var w=this.el.stage.clientWidth||300, h=this.el.stage.clientHeight||300;
-  this.renderer.setSize(w,h,false); this.camera.aspect=w/h; this.camera.updateProjectionMatrix(); this.dirty=true;
+  this.renderer.setSize(w,h,false); this.layoutRegions(); this.camera.aspect=this.mainRect.w/this.mainRect.h; this.camera.updateProjectionMatrix();
+  if(this.slice&&this.slice.on) this.fitCutCam(); this.dirty=true;
 };
 Viewer.prototype.loop = function(){
   var self=this;
@@ -179,7 +203,8 @@ Viewer.prototype.loop = function(){
     if(self.animExplode!==undefined){ var d=self.animExplode-self.explodeK; if(Math.abs(d)<0.005){ self.explodeK=self.animExplode; self.animExplode=undefined; self.fitShadow(); } else self.explodeK+=d*0.18; self.applyExplode(); self.dirty=true; }
     if(self.animCam){ var a=self.animCam, t=Math.min(1,(performance.now()-a.t0)/a.dur), e=1-Math.pow(1-t,3);
       self.sph.r=a.r0+(a.r1-a.r0)*e; self.sph.theta=a.th0+(a.th1-a.th0)*e; self.sph.phi=a.ph0+(a.ph1-a.ph0)*e; self.target.lerpVectors(a.c0,a.c1,e); if(t>=1) self.animCam=null; self.dirty=true; }
-    if(self.dirty){ self.updateCamera(); self.renderer.render(self.scene, self.camera); self.dirty=false; }
+    if(self.easeCutCam()) self.dirty=true;
+    if(self.dirty){ self.updateCamera(); self.render(); self.dirty=false; }
     requestAnimationFrame(frame);
   }
   requestAnimationFrame(frame);
@@ -195,12 +220,13 @@ Viewer.prototype.bindControls = function(){
   var self=this, el=this.renderer.domElement, ptrs={}, last=null, moved=0, downAt=0, pinch=null;
   el.style.touchAction="none";
   el.addEventListener("contextmenu", function(e){ e.preventDefault(); });
-  el.addEventListener("pointerdown", function(e){ el.setPointerCapture(e.pointerId); ptrs[e.pointerId]={x:e.clientX,y:e.clientY,b:e.button,shift:e.shiftKey}; moved=0; downAt=performance.now(); last={x:e.clientX,y:e.clientY};
+  el.addEventListener("pointerdown", function(e){ el.setPointerCapture(e.pointerId); ptrs[e.pointerId]={x:e.clientX,y:e.clientY,b:e.button,shift:e.shiftKey,cut:self.regionAt(e)==="cut"}; moved=0; downAt=performance.now(); last={x:e.clientX,y:e.clientY};
     var ks=Object.keys(ptrs); if(ks.length===2){ var a=ptrs[ks[0]], b=ptrs[ks[1]]; pinch={d:Math.hypot(a.x-b.x,a.y-b.y), cx:(a.x+b.x)/2, cy:(a.y+b.y)/2}; } });
   el.addEventListener("pointermove", function(e){
     if(!ptrs[e.pointerId]){ self.hoverAt(e); return; }
     var p=ptrs[e.pointerId]; var dx=e.clientX-p.x, dy=e.clientY-p.y; p.x=e.clientX; p.y=e.clientY; moved+=Math.abs(dx)+Math.abs(dy);
     var ks=Object.keys(ptrs);
+    if(p.cut){ self.panCut(dx,dy); return; }
     if(ks.length>=2){ var a=ptrs[ks[0]], b=ptrs[ks[1]]; var d=Math.hypot(a.x-b.x,a.y-b.y), cx=(a.x+b.x)/2, cy=(a.y+b.y)/2;
       if(pinch){ self.sph.r*=pinch.d/Math.max(1,d); self.pan(cx-pinch.cx, cy-pinch.cy); } pinch={d:d,cx:cx,cy:cy}; self.dirty=true; return; }
     if(p.b===2 || p.b===1 || p.shift){ self.pan(dx,dy); }
@@ -211,9 +237,12 @@ Viewer.prototype.bindControls = function(){
     if(moved<6 && performance.now()-downAt<600 && p.b===0){ self.clickAt(e); } }
   el.addEventListener("pointerup", up); el.addEventListener("pointercancel", up);
   el.addEventListener("pointerleave", function(){ self.setHover(null); });
-  el.addEventListener("wheel", function(e){ e.preventDefault(); self.sph.r*=Math.exp((e.deltaMode===1?e.deltaY*20:e.deltaY)*0.0012); self.animCam=null; self.dirty=true; }, {passive:false});
+  el.addEventListener("wheel", function(e){ e.preventDefault(); var dy=(e.deltaMode===1?e.deltaY*20:e.deltaY);
+    if(self.regionAt(e)==="cut"){ if(e.shiftKey||e.ctrlKey){ self.zoomCut(Math.exp(-dy*0.002)); } else { self.slice.pos+=(dy>0?1:-1)*0.004; self.updateSlice(); } return; }
+    self.sph.r*=Math.exp(dy*0.0012); self.animCam=null; self.dirty=true; }, {passive:false});
   el.addEventListener("dblclick", function(e){ var m=self.pick(e); if(m) self.flyTo(m); });
 };
+Viewer.prototype.panCut = function(dx,dy){ var s=this.slice, cam=this.cutCam, R=this.cutRect; var k=(cam.right-cam.left)/Math.max(1,R.w); s.panX-=dx*k; s.panY+=dy*k; this.fitCutCam(); this.dirty=true; };
 Viewer.prototype.pan = function(dx,dy){
   var c=this.camera, k=this.sph.r*0.0016; var right=new T.Vector3(), up=new T.Vector3();
   c.matrix.extractBasis(right, up, new T.Vector3());
@@ -221,15 +250,19 @@ Viewer.prototype.pan = function(dx,dy){
 };
 /* ---- picking ---- */
 Viewer.prototype.pick = function(e){
-  var el=this.renderer.domElement, rect=el.getBoundingClientRect();
-  var x=(e.clientX-rect.left)/rect.width*el.width, y=(e.clientY-rect.top)/rect.height*el.height;
-  if(x<0||y<0||x>=el.width||y>=el.height) return null;
+  var el=this.renderer.domElement, rect=el.getBoundingClientRect(), pr=el.width/Math.max(1,rect.width);
+  var cx=e.clientX-rect.left, cy=e.clientY-rect.top; if(cx<0||cy<0||cx>=rect.width||cy>=rect.height) return null;
+  var region=this.regionAt(e), R=region==="cut"?this.cutRect:this.mainRect, cam=region==="cut"?this.cutCam:this.camera;
+  var x=(cx-R.left)*pr, y=(cy-R.top)*pr, fw=Math.max(1,Math.round(R.w*pr)), fh=Math.max(1,Math.round(R.h*pr));
   var self=this, others = this.othersVisible();
   this.meshes.forEach(function(m){ m.userData.mat=m.material; var pickable = m.visible && !(m.userData.ghost && others && !self.only);
     m.material=self.pickMats[m.userData.i]; if(m.visible && !pickable){ m.userData.hid=true; m.visible=false; } });
-  var cam=this.camera; cam.setViewOffset(el.width, el.height, Math.floor(x), Math.floor(y), 1, 1);
-  var r=this.renderer, prevA=r.getClearAlpha(); r.setRenderTarget(this.pickTarget); r.setClearColor(0x000000, 1); r.render(this.scene, cam);
-  var px=new Uint8Array(4); r.readRenderTargetPixels(this.pickTarget,0,0,1,1,px); r.setRenderTarget(null); r.setClearColor(0x000000, 0); cam.clearViewOffset();
+  if(this.sliceGroup) this.sliceGroup.visible=false;
+  cam.setViewOffset(fw, fh, Math.floor(x), Math.floor(y), 1, 1);
+  var r=this.renderer, au=r.shadowMap.autoUpdate; r.shadowMap.autoUpdate=false; r.setScissorTest(false);
+  r.setRenderTarget(this.pickTarget); r.setClearColor(0x000000, 1); r.render(this.scene, cam);
+  var px=new Uint8Array(4); r.readRenderTargetPixels(this.pickTarget,0,0,1,1,px); r.setRenderTarget(null); r.setClearColor(0x000000, 0); cam.clearViewOffset(); r.shadowMap.autoUpdate=au;
+  if(this.sliceGroup) this.sliceGroup.visible=!!(this.slice&&this.slice.on);
   this.meshes.forEach(function(m){ m.material=m.userData.mat; if(m.userData.hid){ m.visible=true; m.userData.hid=false; } });
   var id=(px[0]<<16)|(px[1]<<8)|px[2]; if(!id) return null; return this.meshes[id-1]||null;
 };
@@ -250,6 +283,7 @@ Viewer.prototype.paint = function(m){
   if(hov && !sel){ mat.emissive.setHex(0x2a2a2a); }
   if(sel){ mat.color.setHex(base).lerp(SELC, 0.45); mat.emissive.setHex(0x0d5a48); }
   if(m.userData.ghost){ var solid=this.isolate || !this.othersVisible(); mat.opacity = solid ? 1 : (m.userData.p.tr||0.22); mat.transparent = !solid; mat.depthWrite=solid; }
+  if(this.sliceMats) this.paint2d(m);
 };
 Viewer.prototype.othersVisible = function(){ return this.meshes.some(function(m){ return m.visible && !m.userData.ghost; }); };
 Viewer.prototype.clickAt = function(e){ var m=this.pick(e); this.select(m? m.userData.p.n : null, true); };
@@ -286,7 +320,7 @@ Viewer.prototype.applyVisibility = function(){
   this.fitShadow();
   if(this.selected && !this.selected.visible) this.select(null);
   if(this.hovered && !this.hovered.visible) this.setHover(null);
-  this.computeExplodeDirs(); this.applyExplode(); this.dirty=true;
+  this.computeExplodeDirs(); this.applyExplode(); if(this.slice&&this.slice.on) this.updateSlice(); this.dirty=true;
 };
 Viewer.prototype.fitShadow = function(){
   if(!this.key) return; var box=this.bounds(true), c=box.getCenter(new T.Vector3()), sz=box.getSize(new T.Vector3()); var rad=Math.max(sz.x,sz.y,sz.z)*0.6+0.05;
@@ -300,6 +334,13 @@ Viewer.prototype.bounds = function(exploded){
   var box=new T.Box3(), tmp=new T.Vector3(); var vm=this.visibleMeshes();
   vm.forEach(function(m){ var c=m.userData.center.clone(); if(exploded) c.add(m.position); var r=m.userData.radius; box.expandByPoint(tmp.set(c.x-r,c.y-r,c.z-r)); box.expandByPoint(tmp.set(c.x+r,c.y+r,c.z+r)); });
   if(vm.length===0){ box.set(new T.Vector3(-0.3,0,-0.2), new T.Vector3(0.3,1.75,0.2)); }
+  return box;
+};
+Viewer.prototype.tightBounds = function(pred){ /* from the manifest boxes; pred(m) filters */
+  var box=new T.Box3(), tmp=new T.Vector3(), n=0;
+  this.meshes.forEach(function(m){ if(!m.visible || (pred && !pred(m))) return; var b=m.userData.p.b, o=m.position; n++;
+    box.expandByPoint(tmp.set(b[0]+o.x,b[1]+o.y,b[2]+o.z)); box.expandByPoint(tmp.set(b[3]+o.x,b[4]+o.y,b[5]+o.z)); });
+  if(!n){ box.set(new T.Vector3(-0.3,0,-0.2), new T.Vector3(0.3,1.75,0.2)); }
   return box;
 };
 /* ---- explode ---- */
@@ -334,6 +375,7 @@ Viewer.prototype.flyTo = function(m){ var c=m.userData.center.clone().add(m.posi
 Viewer.prototype.action = function(a){
   if(a==="fit"){ this.fit("front", true); }
   else if(a==="front"||a==="left"||a==="back"){ this.fit(a, true); }
+  else if(a==="slice"){ if(this.slice.on) this.setSlice(false); else { this.applySlicePreset(this.slice.preset||"heart"); } }
   else if(a==="iso"){ if(!this.selected) return; this.isolate=!this.isolate; this.el.iso.classList.toggle("on", this.isolate); this.applyVisibility(); if(this.isolate) this.fit(null, true); }
 };
 /* ---- search ---- */
@@ -356,6 +398,8 @@ Viewer.prototype.applyPreset = function(pr){
   this.setExplode(pr.explode||0);
   this.fit(pr.view||"front", false);
   if(pr.select){ this.select(pr.select); }
+  if(pr.slice && this.ds==="body"){ this.applySlicePreset(pr.slice); }
+  else if(this.slice && this.slice.on) this.setSlice(false);
 };
 Viewer.prototype.startTour = function(names){
   var self=this; names=names.filter(function(n){ return !!self.byName[n]; }); if(!names.length) return;
@@ -379,8 +423,258 @@ Viewer.prototype.tourCheck = function(m){
 Viewer.prototype.dispose = function(){
   this.disposed=true; if(this.resizeObs) this.resizeObs.disconnect();
   if(this.renderer){ this.renderer.dispose(); this.pickTarget.dispose(); }
-  this.meshes.forEach(function(m){ m.material.dispose(); }); this.pickMats.forEach(function(m){ m.dispose(); });
+  this.meshes.forEach(function(m){ m.material.dispose(); }); this.pickMats.forEach(function(m){ m.dispose(); }); (this.sliceMats||[]).forEach(function(m){ if(m) m.dispose(); }); if(this.maskRT) this.maskRT.dispose(); [this.stencilScene,this.maskScene,this.fillScene].forEach(function(sc){ if(sc) sc.traverse(function(o){ if(o.material) o.material.dispose(); }); });
   this.host.innerHTML=""; this.host.classList.remove("a3d");
+};
+
+/* ---- Slice: cutting plane in 3D + CT-style 2D cross-section ---- */
+var SLICE_AXES = {
+  axial:    {label:"Axial",    axis:1, n:[0,1,0],  up:[0,0,1], view:{theta:0, phi:2.55}},      /* look up from the feet: anterior at top, patient's right on the left */
+  coronal:  {label:"Coronal",  axis:2, n:[0,0,-1], up:[0,1,0], view:{theta:0, phi:Math.PI/2}}, /* look from the front */
+  sagittal: {label:"Sagittal", axis:0, n:[1,0,0],  up:[0,1,0], view:{theta:-Math.PI/2, phi:Math.PI/2}} /* look from the patient's right: anterior on the left */
+};
+var SLICE_PRESETS = [
+  {id:"heart",   label:"Heart",             axis:"axial",    part:"Heart (wall)"},
+  {id:"lungs",   label:"Lungs (T5)",        axis:"axial",    part:"T5"},
+  {id:"upperabd",label:"Liver & kidneys",   axis:"axial",    part:"L1"},
+  {id:"pelvis",  label:"Pelvis",            axis:"axial",    part:"Urinary bladder"},
+  {id:"brainsag",label:"Brain · midline",   axis:"sagittal", pos:0.004, focus:["Frontal bone","Occipital bone","Mandible","Cerebellum","C7"]},
+  {id:"braincor",label:"Brain · coronal",   axis:"coronal",  part:"Thalamus (L)", focus:["Frontal bone","Occipital bone","Mandible","Cerebellum","C7"]},
+  {id:"kidcor",  label:"Kidneys · coronal", axis:"coronal",  part:"Kidney (L)", focus:["Liver","Kidney (R)","Kidney (L)","Spleen","Urinary bladder","T10"]},
+  {id:"knee",    label:"Knee · sagittal",   axis:"sagittal", part:"Patella (R)", focus:["Patella (R)"], pad:0.16}
+];
+/* CT-window grey per system (sRGB): bone bright, air dark, contrast in the vessels */
+var CT_GREY = {skin:0.40, skeletal:0.96, muscular:0.50, nervous:0.56, endocrine:0.52, heart:0.58, arterial:0.80, venous:0.68, lymphatic:0.46, respiratory:0.10, digestive:0.47, urinary:0.54, reproductive:0.48};
+/* GLSL3 so the fragment can pull cut faces (back faces) a little toward the camera in depth: a cut always wins over a
+   structure that merely starts just beyond the plane, which keeps interpenetrating meshes (lung lobes, muscle bellies) from leaking through */
+var SLICE_VS = "out vec3 vN; out float vD; void main(){ vec4 mv=modelViewMatrix*vec4(position,1.0); vN=normalMatrix*normal; vD=-mv.z; gl_Position=projectionMatrix*mv; }";
+var MASK_FN = "uniform sampler2D uMask; uniform vec4 uMaskRect; float inBody(){ vec2 uv=(gl_FragCoord.xy-uMaskRect.xy)/uMaskRect.zw; vec2 px=1.0/uMaskRect.zw; float m=0.0;"+
+  " for(int i=-1;i<=1;i++) for(int j=-1;j<=1;j++) m=max(m, texture(uMask, uv+vec2(float(i),float(j))*px).r); return m; }";
+var SLICE_FS = "precision highp float; uniform vec3 uColor; uniform vec3 uCut; uniform vec3 uBg; uniform vec3 uFill; uniform float uFade; uniform float uTol; in vec3 vN; in float vD; out vec4 outColor;"+MASK_FN+
+  "void main(){ if(!gl_FrontFacing){ gl_FragDepth=max(0.0, gl_FragCoord.z-uTol); outColor=vec4(uCut,1.0); return; }"+
+  " gl_FragDepth=gl_FragCoord.z; float k=clamp(1.0-vD/uFade,0.0,1.0); k=k*k; float sh=0.7+0.3*max(0.0,normalize(vN).z); vec3 bg=mix(uBg,uFill,inBody());"+
+  " outColor=vec4(mix(bg, uColor*sh, k*0.75),1.0); }";
+var FILL_VS = "void main(){ gl_Position=vec4(position.xy,0.99999,1.0); }";
+var FILL_FS = "precision highp float; uniform vec3 uBg; uniform vec3 uFill; out vec4 outColor;"+MASK_FN+"void main(){ outColor=vec4(mix(uBg,uFill,inBody()),1.0); }";
+function axisLetter(v){ /* which anatomical direction a world vector points to */
+  var ax=Math.abs(v.x), ay=Math.abs(v.y), az=Math.abs(v.z);
+  if(ax>=ay && ax>=az) return v.x>0 ? "L" : "R";
+  if(ay>=az) return v.y>0 ? "S" : "I";
+  return v.z>0 ? "A" : "P";
+}
+var VERT_RE=/^(Atlas \(C1\)|Axis \(C2\)|C[3-7]|T\d{1,2}|L[1-5])$/;
+Viewer.prototype.initSlice = function(){
+  var self=this;
+  this.slice={on:false, axis:"axial", pos:1.3, flip:false, mode:"color", zoom:1, panX:0, panY:0, bg:new T.Color(0x0b1110), fill:new T.Color(0x4a3a35), fade:new T.Color(0x4a3a35)};
+  this.cutCam=new T.OrthographicCamera(-1,1,1,-1,0,3); this.sliceTol={value:0.01};
+  this.clipPlane=new T.Plane(new T.Vector3(0,1,0), 0);
+  this.capU={value:new T.Vector4(0,0,1,0)};
+  var g=new T.Group(); g.visible=false;
+  var quad=new T.Mesh(new T.PlaneGeometry(1,1), new T.MeshBasicMaterial({color:0x3fd6b2, transparent:true, opacity:0.10, side:T.DoubleSide, depthWrite:false, toneMapped:false}));
+  var edge=new T.LineSegments(new T.EdgesGeometry(new T.PlaneGeometry(1,1)), new T.LineBasicMaterial({color:0x3fd6b2, transparent:true, opacity:0.9, toneMapped:false}));
+  quad.renderOrder=20; edge.renderOrder=21; g.add(quad); g.add(edge); this.scene.add(g); this.sliceGroup=g;
+  this.sliceMats=[];
+  /* body silhouette via stencil parity on the skin: count the back faces a ray from the plane crosses — odd ⇔ the plane is inside the body (works for a skin modelled as a thin shell too) */
+  var skin=this.meshes.filter(function(m){ return m.userData.p.s==="skin"; })[0]; this.skinMesh=skin||null;
+  if(skin){ var st=new T.Scene(); var mk=function(side,op){ return new T.MeshBasicMaterial({side:side, colorWrite:false, depthWrite:false, depthTest:false, stencilWrite:true, stencilFunc:T.AlwaysStencilFunc, stencilZPass:op, stencilZFail:op, stencilFail:op}); };
+    st.add(new T.Mesh(skin.geometry, mk(T.BackSide, T.IncrementWrapStencilOp))); this.stencilScene=st;
+    this.maskRT=new T.WebGLRenderTarget(4,4,{stencilBuffer:true, depthBuffer:true, minFilter:T.NearestFilter, magFilter:T.NearestFilter, generateMipmaps:false});
+    this.maskU={value:this.maskRT.texture}; this.maskRectU={value:new T.Vector4(0,0,4,4)};
+    var ms=new T.Scene(); var mq=new T.Mesh(new T.PlaneGeometry(2,2), new T.ShaderMaterial({vertexShader:FILL_VS, fragmentShader:"precision highp float; out vec4 outColor; void main(){ outColor=vec4(1.0); }", glslVersion:T.GLSL3,
+      depthTest:false, depthWrite:false, stencilWrite:true, stencilFunc:T.NotEqualStencilFunc, stencilRef:0, stencilFuncMask:1, stencilWriteMask:0})); mq.frustumCulled=false; ms.add(mq); this.maskScene=ms;
+    var fs=new T.Scene(); this.fillMat=new T.ShaderMaterial({vertexShader:FILL_VS, fragmentShader:FILL_FS, glslVersion:T.GLSL3,
+      uniforms:{uFill:{value:this.slice.fill}, uBg:{value:this.slice.bg}, uMask:this.maskU, uMaskRect:this.maskRectU}, depthTest:false, depthWrite:false});
+    var q=new T.Mesh(new T.PlaneGeometry(2,2), this.fillMat); q.frustumCulled=false; fs.add(q); this.fillScene=fs; }
+  var bar=this.el.slicebar;
+  bar.querySelectorAll("[data-ax]").forEach(function(b){ b.onclick=function(){ self.setSliceAxis(b.getAttribute("data-ax")); }; });
+  bar.querySelectorAll("[data-mode]").forEach(function(b){ b.onclick=function(){ self.setSliceMode(b.getAttribute("data-mode")); }; });
+  bar.querySelectorAll("[data-sa]").forEach(function(b){ b.onclick=function(){ var a=b.getAttribute("data-sa"); if(a==="flip"){ self.slice.flip=!self.slice.flip; self.updateSlice(); self.lookAtCut(); } if(a==="look") self.lookAtCut(); }; });
+  bar.querySelectorAll("[data-sp]").forEach(function(b){ b.onclick=function(){ self.applySlicePreset(b.getAttribute("data-sp")); }; });
+  this.el.slicepos.addEventListener("input", function(){ var r=self.sliceRange(); self.slice.pos=r[0]+(parseInt(this.value,10)/1000)*(r[1]-r[0]); self.updateSlice(); });
+  this.el.cut.querySelectorAll("[data-z]").forEach(function(b){ b.onclick=function(){ self.zoomCut(b.getAttribute("data-z")==="+" ? 1.35 : 1/1.35); }; });
+  this.vertebrae=this.meshes.filter(function(m){ return VERT_RE.test(m.userData.p.n); }).map(function(m){ var b=m.userData.p.b; return {n:m.userData.p.n.replace(/^Atlas \(C1\)$/,"C1").replace(/^Axis \(C2\)$/,"C2"), lo:b[1], hi:b[4], c:(b[1]+b[4])/2}; });
+};
+Viewer.prototype.sliceMat = function(m){
+  var i=m.userData.i; if(this.sliceMats[i]) return this.sliceMats[i];
+  var mat=new T.ShaderMaterial({vertexShader:SLICE_VS, fragmentShader:SLICE_FS, side:T.DoubleSide, glslVersion:T.GLSL3,
+    uniforms:{uColor:{value:new T.Color()}, uCut:{value:new T.Color()}, uBg:{value:this.slice.bg}, uFill:{value:this.slice.fade}, uFade:{value:0.025}, uTol:this.sliceTol, uMask:this.maskU||{value:null}, uMaskRect:this.maskRectU||{value:new T.Vector4()}}});
+  this.sliceMats[i]=mat; this.paint2d(m); return mat;
+};
+Viewer.prototype.paint2d = function(m){
+  var mat=this.sliceMats[m.userData.i]; if(!mat) return;
+  var p=m.userData.p, s=this.slice, sel=(m===this.selected), hov=(m===this.hovered);
+  var c=new T.Color(m.userData.base).convertLinearToSRGB();
+  var cut;
+  if(s.mode==="ct"){ var g=CT_GREY[p.s]; if(g===undefined) g=0.5; cut=new T.Color(g,g,g); c=new T.Color(g*0.7,g*0.7,g*0.7); }
+  else { var h={}; c.getHSL(h); cut=new T.Color().setHSL(h.h, Math.min(1,h.s*1.1), Math.min(0.9, h.l*1.12+0.04)); }
+  if(sel){ cut.lerp(new T.Color(0x3fd6b2), 0.55); c.lerp(new T.Color(0x3fd6b2),0.4); }
+  else if(hov){ cut.lerp(new T.Color(1,1,1), 0.22); }
+  mat.uniforms.uColor.value.copy(c); mat.uniforms.uCut.value.copy(cut);
+};
+Viewer.prototype.swapSliceMats = function(on){
+  var self=this;
+  this.meshes.forEach(function(m){ if(on){ m.userData.mat3=m.material; m.material=self.sliceMat(m); } else if(m.userData.mat3){ m.material=m.userData.mat3; m.userData.mat3=null; } });
+};
+Viewer.prototype.sliceRange = function(){
+  var box=this.tightBounds(), a=SLICE_AXES[this.slice.axis].axis, k=["x","y","z"][a];
+  return [box.min[k]+0.002, box.max[k]-0.002];
+};
+Viewer.prototype.setSlice = function(on){
+  var self=this, s=this.slice; if(this.ds!=="body") return; on=!!on; if(s.on===on) return; s.on=on;
+  this.el.sliceBtn.classList.toggle("on", on); this.el.slicebar.hidden=!on; this.el.cut.hidden=!on; this.sliceGroup.visible=on; this.host.classList.toggle("a3d-slicing", on);
+  this.renderer.localClippingEnabled=on;
+  this.meshes.forEach(function(m){ var mat=m.material; mat.clippingPlanes=on?[self.clipPlane]:null; mat.clipShadows=on;
+    if(!m.userData.ghost && !m.userData.p.tr && !m.userData.p.ds){ mat.side=on?T.DoubleSide:T.FrontSide; } mat.needsUpdate=true; });
+  this.pickMats.forEach(function(pm){ pm.clippingPlanes=on?[self.clipPlane]:null; pm.needsUpdate=true; });
+  this.capU.value.w=on?1:0;
+  this.resize();
+  if(on){ this.updateSlice(); }
+  this.dirty=true;
+};
+Viewer.prototype.setSliceAxis = function(ax){
+  if(!SLICE_AXES[ax]) return; var s=this.slice; s.axis=ax; s.panX=0; s.panY=0; s.zoom=1; s.focus=null;
+  this.el.slicebar.querySelectorAll("[data-sp]").forEach(function(b){ b.classList.remove("on"); });
+  var r=this.sliceRange(); s.pos=Math.max(r[0], Math.min(r[1], s.pos)); if(s.pos<=r[0]||s.pos>=r[1]) s.pos=(r[0]+r[1])/2;
+  var box=this.tightBounds(), c=box.getCenter(new T.Vector3()); if(ax==="sagittal") s.pos=c.x+0.004; else if(ax==="coronal") s.pos=c.z; else if(s.pos===undefined) s.pos=c.y;
+  this.slice.frame=null; this.updateSlice(); this.lookAtCut();
+};
+Viewer.prototype.setSliceMode = function(mode){
+  var s=this.slice; s.mode=mode; s.bg.setHex(mode==="ct"?0x000000:0x0b1110); s.fill.setHex(mode==="ct"?0x5c5c5c:0x4a3a35);
+  var self=this; this.meshes.forEach(function(m){ self.paint2d(m); });
+  this.el.slicebar.querySelectorAll("[data-mode]").forEach(function(b){ b.classList.toggle("on", b.getAttribute("data-mode")===mode); });
+  this.el.cut.classList.toggle("ct", mode==="ct");
+  this.dirty=true;
+};
+Viewer.prototype.applySlicePreset = function(id){
+  var pr=null; SLICE_PRESETS.forEach(function(x){ if(x.id===id) pr=x; }); if(!pr) return;
+  var s=this.slice; if(!s.on) this.setSlice(true);
+  s.preset=id; s.axis=pr.axis; s.flip=false; s.zoom=1; s.panX=0; s.panY=0;
+  var a=SLICE_AXES[pr.axis].axis;
+  if(pr.part){ var m=this.byName[pr.part]; if(m){ var b=m.userData.p.b; s.pos=(b[a]+b[a+3])/2; if(!m.visible){ this.visibleSys[m.userData.p.s]=true; if(this.only) this.only[pr.part]=true; this.applyVisibility(); } } }
+  else s.pos=pr.pos;
+  s.focus=null;
+  if(pr.focus){ var fb=new T.Box3(), self=this; pr.focus.forEach(function(n){ var fm=self.byName[n]; if(fm){ var b=fm.userData.p.b; fb.expandByPoint(new T.Vector3(b[0],b[1],b[2])); fb.expandByPoint(new T.Vector3(b[3],b[4],b[5])); } });
+    if(!fb.isEmpty()){ fb.expandByScalar(pr.pad||0.02); s.focus=fb; } }
+  this.el.slicebar.querySelectorAll("[data-sp]").forEach(function(b){ b.classList.toggle("on", b.getAttribute("data-sp")===id); });
+  this.slice.frame=null; this.updateSlice(); this.lookAtCut();
+};
+Viewer.prototype.sliceFrame = function(){ /* plane origin, normal (kept side), up, right */
+  var s=this.slice, A=SLICE_AXES[s.axis], box=this.tightBounds(), c=box.getCenter(new T.Vector3());
+  var d=new T.Vector3().fromArray(A.n); if(s.flip) d.negate();
+  var up=new T.Vector3().fromArray(A.up), p0=c.clone(); p0.setComponent(A.axis, s.pos);
+  var right=new T.Vector3().crossVectors(d, up).normalize();
+  return {d:d, up:up, right:right, p0:p0, box:box, c:c, A:A};
+};
+Viewer.prototype.updateSlice = function(){
+  var s=this.slice; if(!s.on) return;
+  var f=this.sliceFrame(), r=this.sliceRange(); s.pos=Math.max(r[0],Math.min(r[1],s.pos));
+  f.p0.setComponent(f.A.axis, s.pos);
+  /* clipping plane keeps the side the normal points to */
+  this.clipPlane.normal.copy(f.d); this.clipPlane.constant=-f.d.dot(f.p0);
+  /* plane indicator */
+  var cbox=this.cutContentBox(f), size=cbox.getSize(new T.Vector3()), cc=cbox.getCenter(new T.Vector3()); cc.setComponent(f.A.axis, s.pos);
+  var g=this.sliceGroup; g.position.copy(cc); g.quaternion.setFromUnitVectors(new T.Vector3(0,0,1), f.d);
+  var sx=Math.max(0.12, Math.abs(size.dot(f.right))*1.15+0.03), sy=Math.max(0.12, Math.abs(size.dot(f.up))*1.15+0.03);
+  g.up.copy(f.up); g.lookAt(cc.clone().add(f.d)); g.scale.set(sx,sy,1);
+  /* orthographic slice camera at the plane, looking into the kept side */
+  var cam=this.cutCam; cam.position.copy(f.p0).addScaledVector(f.d,-0.0005); cam.up.copy(f.up); cam.lookAt(f.p0.clone().add(f.d));
+  cam.near=0; cam.far=size.length()+0.5; this.sliceTol.value=0.012/cam.far; this.fitCutCam(); cam.updateProjectionMatrix();
+  /* slider + readout */
+  this.el.slicepos.value=Math.round((s.pos-r[0])/(r[1]-r[0])*1000);
+  this.el.sliceread.textContent=this.sliceLabel();
+  this.el.slicebar.querySelectorAll("[data-ax]").forEach(function(b){ b.classList.toggle("on", b.getAttribute("data-ax")===s.axis); });
+  var cut=this.el.cut; cut.querySelector(".t").textContent=axisLetter(f.up); cut.querySelector(".b").textContent=axisLetter(f.up.clone().negate());
+  cut.querySelector(".r").textContent=axisLetter(f.right); cut.querySelector(".l").textContent=axisLetter(f.right.clone().negate());
+  cut.querySelector(".a3d-cuttitle").textContent=this.sliceLabel(true);
+  this.fitShadow(); this.dirty=true;
+};
+Viewer.prototype.cutContentBox = function(f){ /* what to frame: the preset's focus, else the structures the plane cuts, else the visible body */
+  var s=this.slice; if(s.focus) return s.focus.clone(); var a=f.A.axis, pos=s.pos;
+  var cb=this.tightBounds(function(m){ if(m.userData.ghost) return false; var b=m.userData.p.b, o=m.position.getComponent(a); return b[a]+o<=pos && b[a+3]+o>=pos; });
+  return cb.isEmpty() ? f.box : cb;
+};
+Viewer.prototype.fitCutCam = function(immediate){
+  var s=this.slice, f=this.sliceFrame(), cam=this.cutCam, R=this.cutRect||{w:1,h:1}, a=f.A.axis;
+  /* frame the structures the plane actually cuts (falls back to the whole visible body) */
+  var cb=this.cutContentBox(f);
+  var size=cb.getSize(new T.Vector3()), cc=cb.getCenter(new T.Vector3()), rel=cc.clone().sub(f.p0);
+  var hw=Math.max(0.06, Math.abs(size.dot(f.right))*0.5*1.08+0.01), hh=Math.max(0.06, Math.abs(size.dot(f.up))*0.5*1.08+0.01);
+  var asp=R.w/Math.max(1,R.h); if(hw/hh>asp) hh=hw/asp; else hw=hh*asp;
+  hw/=s.zoom; hh/=s.zoom;
+  var cx=rel.dot(f.right)+s.panX, cy=rel.dot(f.up)+s.panY;
+  var tgt={l:cx-hw, r:cx+hw, t:cy+hh, b:cy-hh};
+  if(immediate || !s.frame){ s.frame=tgt; } s.frameTgt=tgt;
+  cam.left=s.frame.l; cam.right=s.frame.r; cam.top=s.frame.t; cam.bottom=s.frame.b; cam.updateProjectionMatrix();
+};
+Viewer.prototype.easeCutCam = function(){ /* called every frame: glide the 2D framing toward its target */
+  var s=this.slice; if(!s||!s.on||!s.frameTgt) return false; var f=s.frame, t=s.frameTgt, d=0;
+  ["l","r","t","b"].forEach(function(k){ var e=t[k]-f[k]; d+=Math.abs(e); f[k]+= Math.abs(e)<0.0005 ? e : e*0.22; });
+  if(d<0.0005) return false; var cam=this.cutCam; cam.left=f.l; cam.right=f.r; cam.top=f.t; cam.bottom=f.b; cam.updateProjectionMatrix(); return true;
+};
+Viewer.prototype.zoomCut = function(k){ var s=this.slice; s.zoom=Math.max(1,Math.min(6,s.zoom*k)); if(s.zoom===1){ s.panX=0; s.panY=0; } this.fitCutCam(); this.dirty=true; };
+Viewer.prototype.sliceLabel = function(short){
+  var s=this.slice, A=SLICE_AXES[s.axis], box=this.tightBounds(), c=box.getCenter(new T.Vector3());
+  if(s.axis==="axial"){
+    var lvl=null, best=1e9; this.vertebrae.forEach(function(v){ if(s.pos>=v.lo && s.pos<=v.hi){ var d=Math.abs(v.c-s.pos); if(d<best){ best=d; lvl=v.n; } } });
+    var cm=(s.pos*100).toFixed(1);
+    return short ? ("Axial"+(lvl?" · "+lvl:"")) : ("Axial · "+cm+" cm above the floor"+(lvl?" · "+lvl+" level":""));
+  }
+  if(s.axis==="sagittal"){ var dx=(s.pos-0)*100; var side=Math.abs(dx)<0.6?"midline":(Math.abs(dx).toFixed(1)+" cm "+(short?(dx>0?"L":"R"):(dx>0?"left":"right")+" of midline")); return "Sagittal · "+side; }
+  var dz=(s.pos-c.z)*100; var w=Math.abs(dz)<0.6?(short?"mid":"mid-coronal plane"):(Math.abs(dz).toFixed(1)+" cm "+(short?(dz>0?"ant.":"post."):(dz>0?"anterior":"posterior")+" of centre"));
+  return "Coronal · "+w;
+};
+Viewer.prototype.lookAtCut = function(){
+  var s=this.slice; if(!s.on) return; var f=this.sliceFrame(), A=f.A;
+  var box=this.cutContentBox(f), size=box.getSize(new T.Vector3()); var ext=[size.x,size.y,size.z]; ext[A.axis]=0;
+  var rad=Math.max(ext[0],ext[1],ext[2])*0.5*1.15+0.06;
+  var r = rad/Math.sin(this.camera.fov*Math.PI/360)/Math.min(1,this.camera.aspect)*0.95;
+  var cc=box.getCenter(new T.Vector3()); cc.setComponent(A.axis, s.pos); f.p0.copy(cc);
+  var th=A.view.theta, ph=A.view.phi;
+  if(s.flip){ if(s.axis==="axial") ph=Math.PI-ph; else th=th+Math.PI; }
+  this.goTo(f.p0, r, th, ph, true);
+};
+Viewer.prototype.layoutRegions = function(){
+  var w=this.el.stage.clientWidth||300, h=this.el.stage.clientHeight||300;
+  if(!this.slice||!this.slice.on){ this.mainRect={left:0,top:0,w:w,h:h}; this.cutRect=null; return; }
+  var vertical = w < h*1.15;
+  if(vertical){ var hh=Math.floor(h*0.5); this.mainRect={left:0,top:0,w:w,h:hh}; this.cutRect={left:0,top:hh,w:w,h:h-hh}; }
+  else { var wl=Math.floor(w*(w<900?0.5:0.56)); this.mainRect={left:0,top:0,w:wl,h:h}; this.cutRect={left:wl,top:0,w:w-wl,h:h}; }
+  var c=this.el.cut, R=this.cutRect; c.style.left=R.left+"px"; c.style.top=R.top+"px"; c.style.width=R.w+"px"; c.style.height=R.h+"px";
+  this.el.cut.classList.toggle("vert", vertical); this.el.cut.classList.toggle("narrow", R.w<340);
+};
+Viewer.prototype.regionAt = function(e){
+  if(!this.cutRect) return "main"; var rect=this.el.stage.getBoundingClientRect(), x=e.clientX-rect.left, y=e.clientY-rect.top, R=this.cutRect;
+  return (x>=R.left && x<R.left+R.w && y>=R.top && y<R.top+R.h) ? "cut" : "main";
+};
+Viewer.prototype.render = function(){
+  var r=this.renderer, s=this.slice;
+  if(!s||!s.on){ r.setScissorTest(false); r.setViewport(0,0,this.mainRect.w,this.mainRect.h); r.setClearColor(0x000000,0); r.render(this.scene,this.camera); return; }
+  var L=this.mainRect, R=this.cutRect, H=L.h+ (R.top>0?R.h:0);
+  var stageH=this.el.stage.clientHeight||300;
+  /* view-space cap normal for the 3D pass (faces the removed side) */
+  this.camera.updateMatrixWorld(); this.camera.matrixWorldInverse.copy(this.camera.matrixWorld).invert();
+  var nv=this.clipPlane.normal.clone().negate().transformDirection(this.camera.matrixWorldInverse); this.capU.value.set(nv.x,nv.y,nv.z,1);
+  r.setScissorTest(true);
+  r.setViewport(L.left, stageH-L.top-L.h, L.w, L.h); r.setScissor(L.left, stageH-L.top-L.h, L.w, L.h);
+  r.setClearColor(0x000000,0); r.render(this.scene,this.camera);
+  /* 2D slice */
+  this.swapSliceMats(true); this.sliceGroup.visible=false; var au=r.shadowMap.autoUpdate; r.shadowMap.autoUpdate=false;
+  r.setViewport(R.left, stageH-R.top-R.h, R.w, R.h); r.setScissor(R.left, stageH-R.top-R.h, R.w, R.h);
+  var skinVis=this.skinMesh?this.skinMesh.visible:false; s.fade.copy(skinVis?s.fill:s.bg);
+  var pr=r.getPixelRatio(), mw=Math.max(1,Math.round(R.w*pr)), mh=Math.max(1,Math.round(R.h*pr));
+  if(this.maskRT){ /* body silhouette mask: stencil parity of the skin's back faces, resolved into a texture */
+    if(this.maskRT.width!==mw||this.maskRT.height!==mh) this.maskRT.setSize(mw,mh);
+    this.maskRectU.value.set(Math.round(R.left*pr), Math.round((stageH-R.top-R.h)*pr), mw, mh);
+    r.setRenderTarget(this.maskRT); r.setClearColor(0x000000,1); r.state.buffers.stencil.setMask(0xff); r.state.buffers.depth.setMask(true); r.state.buffers.color.setMask(true); r.clear(true,true,true); r.autoClear=false;
+    if(skinVis){ r.render(this.stencilScene,this.cutCam); r.render(this.maskScene,this.cutCam); }
+    r.setRenderTarget(null); r.setScissorTest(true); }
+  r.setClearColor(s.bg,1); r.state.buffers.stencil.setMask(0xff); r.state.buffers.depth.setMask(true); r.state.buffers.color.setMask(true); r.clear(true,true,true); r.autoClear=false;
+  if(this.fillScene && skinVis) r.render(this.fillScene,this.cutCam);
+  if(this.skinMesh) this.skinMesh.visible=false;
+  r.render(this.scene,this.cutCam);
+  if(this.skinMesh) this.skinMesh.visible=skinVis;
+  r.autoClear=true; r.shadowMap.autoUpdate=au; this.sliceGroup.visible=true; this.swapSliceMats(false);
+  r.setScissorTest(false); r.setViewport(0,0,L.w+(R.left>0?R.w:0),stageH);
 };
 
 /* ---------- Joint lab: real bones + ligaments + motion + exam maneuvers ---------- */
@@ -673,5 +967,5 @@ JointLab.prototype.renderLigList = function(){
 };
 JointLab.prototype.dispose = function(){ this.disposed=true; if(this.resizeObs) this.resizeObs.disconnect(); if(this.renderer){ this.renderer.dispose(); this.pickTarget.dispose(); } this.clear(); this.host.innerHTML=""; this.host.classList.remove("a3d"); this.host.classList.remove("a3d-joint"); };
 
-window.Atlas3D = { create:function(host, opts){ return new Viewer(host, opts); }, createJoint:function(host, opts){ return new JointLab(host, opts); }, JOINTS:JOINTS, SYS:SYS, SYS_ORDER:SYS_ORDER, preload:loadData, parts:function(ds){ return (ds==="cell"?window.AP3D_CELL_MAN:window.AP3D_MAN).parts; } };
+window.Atlas3D = { SLICE_PRESETS:SLICE_PRESETS, create:function(host, opts){ return new Viewer(host, opts); }, createJoint:function(host, opts){ return new JointLab(host, opts); }, JOINTS:JOINTS, SYS:SYS, SYS_ORDER:SYS_ORDER, preload:loadData, parts:function(ds){ return (ds==="cell"?window.AP3D_CELL_MAN:window.AP3D_MAN).parts; } };
 })();
