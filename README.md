@@ -52,7 +52,7 @@ There is no framework and no build step. Plain files:
 - `data/body.js`, `data/cell.js` — the packed 3D models (quantized, gzipped, base64)
 - `src/` — the readable sources and the Python pipeline that curates, decimates, quantizes and packs the anatomy (`atlas3d/config.py`, `build.py`) and the cell (`cellbuild.py`)
 
-The 3D pipeline reads the BodyParts3D OBJ/STL set, merges the sub-meshes of each structure, simplifies each one to a triangle budget, quantizes positions to 16-bit, and gzips the result; the viewer inflates it with `DecompressionStream` and renders each structure as its own mesh with GPU picking for click-to-identify. Slice mode is a clipping plane with the cut faces shaded as flat caps, plus an orthographic camera sitting on the plane: because every structure is a closed surface, any back-face visible from the plane is solid tissue, so the cross-section fills itself without a stencil pass.
+The 3D pipeline reads the BodyParts3D OBJ/STL set, merges the sub-meshes of each structure, simplifies each one to a triangle budget, quantizes positions to 16-bit, and gzips the result; the viewer inflates it with `DecompressionStream` and renders each structure as its own mesh with GPU picking for click-to-identify. Slice mode is a clipping plane with the cut faces shaded as flat caps, plus an orthographic camera sitting on the plane: because every structure is a closed surface, any back-face visible from the plane is solid tissue, so each structure's cross-section fills itself; a single stencil pass over the skin supplies the soft-tissue silhouette, and the CT look is just a grey per tissue class.
 
 ## Data & attribution
 
