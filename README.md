@@ -1,6 +1,6 @@
 # A&P Atlas
 
-**A free, open, guided anatomy & physiology course with a real 3D body, a real 3D cell and a joint lab — plain HTML, no build, no server.**
+**A free, open, guided anatomy & physiology course with a real 3D body you can click, explode and slice like a CT, a real 3D cell and a joint lab — plain HTML, no build, no server.**
 
 Built for nursing prereqs. No account, no server, no tracking: everything runs in your browser and your progress stays on your device.
 
@@ -21,6 +21,8 @@ Built for nursing prereqs. No account, no server, no tracking: everything runs i
 
 **A real 3D body.** 401 curated structures from [BodyParts3D](https://dbarchive.biosciencedbc.jp/en/bodyparts3d/) (MRI-derived, not drawn): the full skeleton, ~70 named muscles, brain lobes and deep structures, brainstem and spinal cord, heart wall, chambers, valves and coronaries, major arteries and veins down to the pedal pulses, lungs and airway, kidneys and urinary tract, GI tract and glands. Click anything to identify it, layer systems on and off, explode it, search it.
 
+**Cross-sections.** Cut the body on any axial, coronal or sagittal plane. The 3D view is capped at the cut; a second panel shows the slice in radiological orientation (patient's right on your left, anterior at the top) in colour or as a CT-style grey-scale, with the vertebral level read off the spine. Scroll to move the plane, click anything in the slice to name it. Presets for the heart, lungs, upper abdomen, pelvis, brain (midline and coronal), kidneys and knee.
+
 **A real 3D cell.** A cross-section model with 18 clickable organelles for the cell lessons.
 
 **A joint lab.** Shoulder, knee and ankle hinged on the real bones: motion sliders, ligaments and tendons drawn between their attachment sites with live tension, and the named exam maneuvers (Lachman, anterior drawer, empty can, apprehension, talar tilt, Thompson…) that put the joint in its test position and show which structure it loads.
@@ -30,7 +32,8 @@ Built for nursing prereqs. No account, no server, no tracking: everything runs i
 | | | |
 |---|---|---|
 | ![](docs/screenshots/muscles.png) | ![](docs/screenshots/heart-exploded.png) | ![](docs/screenshots/cell.png) |
-| ![](docs/screenshots/joint-lab.png) | ![](docs/screenshots/lesson-read.png) | ![](docs/screenshots/drill.png) |
+| ![](docs/screenshots/slice-ct.png) | ![](docs/screenshots/slice-coronal.png) | ![](docs/screenshots/joint-lab.png) |
+| ![](docs/screenshots/lesson-read.png) | ![](docs/screenshots/drill.png) | ![](docs/screenshots/course.png) |
 
 ## Use it
 
@@ -44,12 +47,12 @@ There is no framework and no build step. Plain files:
 
 - `index.html` — the page shell and all CSS
 - `app.js` — the course: lessons, cards, scheduler, sessions and every view (assembled from `src/course/`)
-- `vendor/atlas3d.js` — the 3D viewer and joint lab (Three.js r147 in `vendor/three.min.js`)
+- `vendor/atlas3d.js` — the 3D viewer, slice mode and joint lab (Three.js r147 in `vendor/three.min.js`)
 - `data/figures.js` — the OpenStax plates plus their label masks, base64
 - `data/body.js`, `data/cell.js` — the packed 3D models (quantized, gzipped, base64)
 - `src/` — the readable sources and the Python pipeline that curates, decimates, quantizes and packs the anatomy (`atlas3d/config.py`, `build.py`) and the cell (`cellbuild.py`)
 
-The 3D pipeline reads the BodyParts3D OBJ/STL set, merges the sub-meshes of each structure, simplifies each one to a triangle budget, quantizes positions to 16-bit, and gzips the result; the viewer inflates it with `DecompressionStream` and renders each structure as its own mesh with GPU picking for click-to-identify.
+The 3D pipeline reads the BodyParts3D OBJ/STL set, merges the sub-meshes of each structure, simplifies each one to a triangle budget, quantizes positions to 16-bit, and gzips the result; the viewer inflates it with `DecompressionStream` and renders each structure as its own mesh with GPU picking for click-to-identify. Slice mode is a clipping plane with the cut faces shaded as flat caps, plus an orthographic camera sitting on the plane: because every structure is a closed surface, any back-face visible from the plane is solid tissue, so the cross-section fills itself without a stencil pass.
 
 ## Data & attribution
 
