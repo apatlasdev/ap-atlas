@@ -1,0 +1,6 @@
+# nothing secret lives here — this is a static site. Keep it that way.
+*.tmp
+.DS_Store
+Thumbs.db
+node_modules/
+__pycache__/
