@@ -371,6 +371,35 @@
   .a3d-search{flex:1 1 100%}
 }
 
+/* slice / cross-section */
+.a3d-slicebar{flex:1 1 100%;display:flex;flex-wrap:wrap;align-items:center;gap:8px 10px;padding-top:8px;border-top:1px dashed var(--line)}
+.a3d-seg{display:inline-flex;border:1px solid var(--line);border-radius:8px;overflow:hidden;background:var(--surface)}
+.a3d-seg button{padding:5px 10px;border:0;background:none;color:var(--muted);font:inherit;font-size:.76rem;cursor:pointer}
+.a3d-seg button+button{border-left:1px solid var(--line)}
+.a3d-seg button.on{background:var(--brand);color:#fff}
+.a3d-slicepos{flex:1 1 140px;min-width:120px;accent-color:var(--brand)}
+.a3d-sliceread{font-family:"IBM Plex Mono",ui-monospace,monospace;font-size:.72rem;color:var(--ink);white-space:nowrap}
+.a3d-slicepre{display:flex;flex-wrap:wrap;gap:4px;flex:1 1 100%}
+.a3d-slicepre button{padding:3px 9px;border-radius:999px;border:1px solid var(--line);background:var(--surface);color:var(--muted);font:inherit;font-size:.72rem;cursor:pointer}
+.a3d-slicepre button.on,.a3d-slicepre button:hover{color:var(--ink);border-color:var(--brand)}
+.a3d-slicepre button.on{background:color-mix(in srgb,var(--brand) 14%,var(--surface))}
+.a3d-cut{position:absolute;pointer-events:none;border-left:1px solid rgba(255,255,255,.14);font-family:"IBM Plex Mono",ui-monospace,monospace;color:#cfe3dc}
+.a3d-cut.vert{border-left:0;border-top:1px solid rgba(255,255,255,.14)}
+.a3d-cutlab{position:absolute;font-size:.8rem;font-weight:600;letter-spacing:.06em;color:#e7f0ec;text-shadow:0 1px 3px rgba(0,0,0,.8)}
+.a3d-cutlab.t{top:8px;left:50%;transform:translateX(-50%)}
+.a3d-cutlab.b{bottom:8px;left:50%;transform:translateX(-50%)}
+.a3d-cutlab.l{left:10px;top:50%;transform:translateY(-50%)}
+.a3d-cutlab.r{right:10px;top:50%;transform:translateY(-50%)}
+.a3d-cuttitle{position:absolute;top:8px;left:12px;font-size:.68rem;text-transform:uppercase;letter-spacing:.1em;color:#7fd6bf}
+.a3d-cut.ct .a3d-cuttitle{color:#cfd8d4}
+.a3d-cutzoom{position:absolute;top:8px;right:8px;display:flex;gap:4px;pointer-events:auto}
+.a3d-cutzoom button{width:26px;height:26px;border-radius:7px;border:1px solid rgba(255,255,255,.2);background:rgba(0,0,0,.35);color:#fff;font:inherit;font-size:.95rem;cursor:pointer;line-height:1}
+.a3d-cuthint{position:absolute;bottom:8px;left:12px;font-size:.62rem;color:rgba(231,240,236,.5);letter-spacing:.02em;max-width:40%}
+.a3d-cut.vert .a3d-cuthint,.a3d-cut.narrow .a3d-cuthint{display:none}
+.a3d-slicing .a3d-body{grid-template-columns:1fr 230px}
+.a3d-slicing .a3d-info{font-size:.82rem;padding:12px}
+@media (max-width:860px){ .a3d-slicing .a3d-body{grid-template-columns:1fr} .a3d-slicing .a3d-stage{height:72vh} }
+
 /* joint lab */
 .a3d-joint .a3d-body{grid-template-columns:1fr 320px}
 .a3d-jtabs{display:flex;gap:6px;flex:1 1 auto}
@@ -393,7 +422,6 @@
 .a3d-testcard div{margin-bottom:4px}
 .a3d-testcard span{display:inline-block;min-width:64px;font-family:"IBM Plex Mono",monospace;font-size:.66rem;text-transform:uppercase;letter-spacing:.08em;color:var(--brand)}
 @media (max-width:860px){ .a3d-joint .a3d-body{grid-template-columns:1fr} .a3d-joint .a3d-info{max-height:50vh} }
-
 .a3d-presets{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:14px}
 .a3d-foot{margin-top:8px}
 .labcta{display:flex;align-items:center;justify-content:space-between;gap:14px;flex-wrap:wrap;margin-top:14px;padding:14px 16px;border-radius:14px;background:color-mix(in srgb,var(--brand) 8%,var(--surface));border:1px solid color-mix(in srgb,var(--brand) 30%,var(--line))}
